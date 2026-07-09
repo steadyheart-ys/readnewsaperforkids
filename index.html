@@ -344,8 +344,8 @@
         <label class="admin-label">기사 링크 (선택)</label>
         <input class="admin-input" id="newSessionLink" placeholder="https://...">
         <label class="admin-label">기사 이미지 업로드 (선택)</label>
-        <input class="admin-input" type="file" id="newSessionImage" accept="image/*">
-        <div class="hint">이미지는 자동으로 압축되어 저장돼요</div>
+        <input class="admin-input" type="file" id="newSessionImage" accept="image/*,application/pdf">
+        <div class="hint">사진 또는 PDF 모두 올릴 수 있어요 (PDF는 첫 페이지만 사용돼요). 이미지는 자동으로 압축되어 저장돼요</div>
         <button class="submit-btn" id="createSessionBtn">이번 회차로 등록하기</button>
       </div>
       <h3 style="margin:18px 0 10px;">지난 회차들</h3>
@@ -374,6 +374,10 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</script>
 
 <script>
 /* =========================================================
@@ -859,23 +863,29 @@ function createSession(){
   };
 
   if(file){
-    // Storage 없이 Firestore에 직접 저장하기 위해, 최대한 작게 압축한 base64로 변환
-    withTimeout(
-      compressImageToBase64(file, 500, 0.55),
-      15000, 'image-compress'
-    ).then(dataUrl=>{
-      // Firestore 문서 1개는 1MB 제한이라, 여유 있게 700KB 아래로만 허용
-      if(dataUrl.length > 700000){
-        showToast('이미지 용량이 너무 커요. 더 작은 사진으로 다시 시도해주세요');
+    const isPdf = file.type === 'application/pdf';
+    const processPromise = isPdf
+      ? convertPdfFirstPageToDataUrl(file, 500, 0.55)
+      : compressImageToBase64(file, 500, 0.55);
+
+    withTimeout(processPromise, 20000, isPdf ? 'pdf-convert' : 'image-compress')
+      .then(dataUrl=>{
+        // Firestore 문서 1개는 1MB 제한이라, 여유 있게 700KB 아래로만 허용
+        if(dataUrl.length > 700000){
+          showToast('이미지 용량이 너무 커요. 더 작은 파일로 다시 시도해주세요');
+          resetBtn();
+          return;
+        }
+        finishCreate(dataUrl);
+      }).catch(err=>{
+        console.error(err);
+        if(String(err.message).startsWith('timeout')){
+          showToast('처리 시간이 너무 오래 걸려요. 다른 파일로 시도해주세요');
+        } else {
+          showToast(isPdf ? 'PDF 변환에 실패했어요' : '이미지 처리에 실패했어요');
+        }
         resetBtn();
-        return;
-      }
-      finishCreate(dataUrl);
-    }).catch(err=>{
-      console.error(err);
-      showToast('이미지 처리에 실패했어요');
-      resetBtn();
-    });
+      });
   } else {
     finishCreate(null);
   }
@@ -901,6 +911,35 @@ function compressImageToBase64(file, maxWidth, quality){
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+// PDF 첫 페이지를 렌더링해서 base64(dataURL) 이미지로 변환
+function convertPdfFirstPageToDataUrl(file, maxWidth, quality){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      const typedArray = new Uint8Array(e.target.result);
+      pdfjsLib.getDocument({ data: typedArray }).promise
+        .then(pdf => pdf.getPage(1))
+        .then(page => {
+          const baseViewport = page.getViewport({ scale: 1 });
+          const scale = maxWidth / baseViewport.width;
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext('2d');
+          // PDF는 배경이 투명할 수 있어 흰 배경을 먼저 깔아줌
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          return page.render({ canvasContext: ctx, viewport }).promise.then(()=>canvas);
+        })
+        .then(canvas => resolve(canvas.toDataURL('image/jpeg', quality)))
+        .catch(reject);
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
   });
 }
 
