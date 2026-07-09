@@ -385,6 +385,7 @@
    Firebase 콘솔 > 프로젝트 설정 > 일반 > 내 앱(웹) 에서 확인 가능
    ========================================================= */
 
+
 const firebaseConfig = {
   apiKey: "AIzaSyBAKEFcVqctSYa7cxlmqXG2h3Gh2Xo_HIA",
   authDomain: "read-newspaper-kids.firebaseapp.com",
@@ -393,6 +394,7 @@ const firebaseConfig = {
   messagingSenderId: "328478617229",
   appId: "1:328478617229:web:5f717c29637693b7697cc4"
 };
+
 
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
@@ -459,30 +461,35 @@ function renderTree(leafCount){
 }
 
 /* ---------------------------------------------------------
-   Firestore: 세션(회차) 불러오기 - 아이 화면
+   Firestore: 세션(회차) 불러오기 - 아이 화면 (실시간 반영)
 --------------------------------------------------------- */
+let latestSessionUnsub = null;
+
 function loadLatestSessionForKids(){
   if(!isFirebaseConfigured()){
     document.getElementById('articleBody').innerHTML =
       '<div class="empty-state">⚠️ firebaseConfig가 아직 설정되지 않았어요.<br>index.html 상단의 설정값을 먼저 채워주세요.</div>';
     return;
   }
-  withTimeout(
-    db.collection('sessions').orderBy('createdAt','desc').limit(1).get(),
-    12000, 'load-session'
-  ).then(snap=>{
-    if(snap.empty){
-      currentSession = null;
-      return;
-    }
-    const doc = snap.docs[0];
-    currentSession = { id: doc.id, ...doc.data() };
-    renderArticleForKids();
-    watchLeafCount(currentSession.id);
-  }).catch(err=>{
-    console.error(err);
-    showToast('기사를 불러오지 못했어요');
-  });
+  if(latestSessionUnsub) return; // 이미 실시간 구독 중이면 다시 걸지 않음
+
+  latestSessionUnsub = db.collection('sessions').orderBy('createdAt','desc').limit(1)
+    .onSnapshot(snap=>{
+      if(snap.empty){
+        currentSession = null;
+        document.getElementById('sessionLabel').textContent = '이번 주 기사';
+        document.getElementById('articleBody').innerHTML =
+          '<div class="empty-state">아직 등록된 기사가 없어요.<br>운영자 화면에서 이번 주 기사를 등록해주세요.</div>';
+        return;
+      }
+      const doc = snap.docs[0];
+      currentSession = { id: doc.id, ...doc.data() };
+      renderArticleForKids();
+      watchLeafCount(currentSession.id);
+    }, err=>{
+      console.error(err);
+      showToast('기사를 불러오지 못했어요');
+    });
 }
 
 function renderArticleForKids(){
@@ -500,8 +507,10 @@ function renderArticleForKids(){
   document.getElementById('articleBody').innerHTML = html || '<div class="empty-state">기사 내용이 없어요.</div>';
 }
 
+let leafCountUnsub = null;
 function watchLeafCount(sessionId){
-  db.collection('questions').where('sessionId','==',sessionId).onSnapshot(snap=>{
+  if(leafCountUnsub){ leafCountUnsub(); leafCountUnsub = null; }
+  leafCountUnsub = db.collection('questions').where('sessionId','==',sessionId).onSnapshot(snap=>{
     renderTree(snap.size);
   });
 }
