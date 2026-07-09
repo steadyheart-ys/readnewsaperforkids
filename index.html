@@ -351,6 +351,26 @@
       </div>
       <h3 style="margin:18px 0 10px;">지난 회차들</h3>
       <div id="sessionList"></div>
+
+      <div class="card" id="sessionEditPanel" style="display:none;">
+        <div class="row-between" style="margin-bottom:10px;">
+          <strong>회차 수정</strong>
+          <button class="mode-toggle" id="closeEditBtn">닫기</button>
+        </div>
+        <label class="admin-label">회차 제목</label>
+        <input class="admin-input" id="editSessionTitle">
+        <label class="admin-label">날짜</label>
+        <input class="admin-input" type="date" id="editSessionDate">
+        <label class="admin-label">기사 링크</label>
+        <input class="admin-input" id="editSessionLink">
+        <div id="editImagePreviewWrap" style="margin-bottom:10px;"></div>
+        <label class="admin-label">이미지/PDF 새로 올리기 (선택, 올리면 기존 이미지를 대체해요)</label>
+        <input class="admin-input" type="file" id="editSessionImage" accept="image/*,application/pdf">
+        <div class="row-between" style="margin-top:14px;gap:10px;">
+          <button class="submit-btn" id="saveSessionBtn" style="flex:2;">저장하기</button>
+          <button class="submit-btn" id="deleteSessionBtn" style="flex:1;background:var(--coral);">삭제</button>
+        </div>
+      </div>
     </div>
 
     <div class="admin-panel" id="panelQuestions" style="display:none;">
@@ -385,6 +405,7 @@
    🔧 설정: 새 Firebase 프로젝트 정보로 아래 값을 채워주세요
    Firebase 콘솔 > 프로젝트 설정 > 일반 > 내 앱(웹) 에서 확인 가능
    ========================================================= */
+
 const firebaseConfig = {
   apiKey: "AIzaSyBAKEFcVqctSYa7cxlmqXG2h3Gh2Xo_HIA",
   authDomain: "read-newspaper-kids.firebaseapp.com",
@@ -492,7 +513,7 @@ function loadLatestSessionForKids(){
 }
 
 function renderArticleForKids(){
-  document.getElementById('sessionLabel').textContent = currentSession.title || '이번 주 기사';
+  document.getElementById('sessionLabel').textContent = '이번 주 기사';
   let html = '';
   if(currentSession.imageUrl){
     html += `<img class="article-thumb" src="${currentSession.imageUrl}" alt="기사 이미지">`;
@@ -977,7 +998,7 @@ function loadSessionsForAdmin(){
     sessions = snap.docs.map(d=>({id:d.id, ...d.data()}));
     const list = document.getElementById('sessionList');
     list.innerHTML = sessions.map(s=>`
-      <div class="session-item">
+      <div class="session-item" data-id="${s.id}">
         <div class="row-between">
           <strong>${escapeHtml(s.title)}</strong>
         </div>
@@ -985,12 +1006,126 @@ function loadSessionsForAdmin(){
       </div>
     `).join('') || '<div class="empty-state">등록된 회차가 없어요.</div>';
 
+    list.querySelectorAll('.session-item').forEach(item=>{
+      item.addEventListener('click', ()=> openSessionEditPanel(item.dataset.id));
+    });
+
     // 질문 필터 select 채우기
     const sel = document.getElementById('questionSessionFilter');
     sel.innerHTML = '<option value="all">전체 회차</option>' +
       sessions.map(s=>`<option value="${s.id}">${escapeHtml(s.title)}</option>`).join('');
   });
 }
+
+let editingSessionId = null;
+
+function openSessionEditPanel(sessionId){
+  const s = sessions.find(x=>x.id===sessionId);
+  if(!s) return;
+  editingSessionId = sessionId;
+
+  document.querySelectorAll('.session-item').forEach(el=>{
+    el.classList.toggle('selected', el.dataset.id===sessionId);
+  });
+
+  document.getElementById('editSessionTitle').value = s.title || '';
+  document.getElementById('editSessionDate').value = s.articleDate || '';
+  document.getElementById('editSessionLink').value = s.link || '';
+  document.getElementById('editSessionImage').value = '';
+
+  const previewWrap = document.getElementById('editImagePreviewWrap');
+  previewWrap.innerHTML = s.imageUrl
+    ? `<img src="${s.imageUrl}" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;">`
+    : '<div class="hint" style="margin:0;">등록된 이미지가 없어요</div>';
+
+  document.getElementById('sessionEditPanel').style.display = 'block';
+  document.getElementById('sessionEditPanel').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+document.getElementById('closeEditBtn').addEventListener('click', ()=>{
+  editingSessionId = null;
+  document.getElementById('sessionEditPanel').style.display = 'none';
+  document.querySelectorAll('.session-item').forEach(el=>el.classList.remove('selected'));
+});
+
+document.getElementById('saveSessionBtn').addEventListener('click', ()=>{
+  if(!editingSessionId) return;
+  const title = document.getElementById('editSessionTitle').value.trim();
+  const dateVal = document.getElementById('editSessionDate').value;
+  const link = document.getElementById('editSessionLink').value.trim();
+  const fileInput = document.getElementById('editSessionImage');
+  const file = fileInput.files[0];
+
+  if(!title){ showToast('회차 제목을 입력해주세요'); return; }
+
+  const btn = document.getElementById('saveSessionBtn');
+  btn.disabled = true; btn.textContent = '저장 중...';
+  const resetBtn = ()=>{ btn.disabled = false; btn.textContent = '저장하기'; };
+
+  const finishSave = (imageUrl)=>{
+    const updateData = { title, articleDate: dateVal || null, link };
+    if(imageUrl !== undefined) updateData.imageUrl = imageUrl;
+
+    withTimeout(
+      db.collection('sessions').doc(editingSessionId).update(updateData),
+      12000, 'session-update'
+    ).then(()=>{
+      showToast('회차가 수정되었어요');
+      document.getElementById('sessionEditPanel').style.display = 'none';
+      editingSessionId = null;
+      loadSessionsForAdmin();
+    }).catch(err=>{
+      console.error(err);
+      showToast('수정에 실패했어요: ' + (err.message || err));
+    }).finally(resetBtn);
+  };
+
+  if(file){
+    const isPdf = file.type === 'application/pdf';
+    const processPromise = isPdf
+      ? convertPdfFirstPageToDataUrl(file, 500, 0.55)
+      : compressImageToBase64(file, 500, 0.55);
+    withTimeout(processPromise, 20000, 'edit-image').then(dataUrl=>{
+      if(dataUrl.length > 700000){
+        showToast('이미지 용량이 너무 커요. 더 작은 파일로 시도해주세요');
+        resetBtn();
+        return;
+      }
+      finishSave(dataUrl);
+    }).catch(err=>{
+      console.error(err);
+      showToast('이미지 처리에 실패했어요');
+      resetBtn();
+    });
+  } else {
+    finishSave(undefined); // 이미지는 그대로 유지
+  }
+});
+
+document.getElementById('deleteSessionBtn').addEventListener('click', ()=>{
+  if(!editingSessionId) return;
+  const s = sessions.find(x=>x.id===editingSessionId);
+  const ok = window.confirm(`"${s ? s.title : '이 회차'}"를 정말 삭제할까요?\n이 회차에 달린 질문들은 남아있지만, 회차 정보와 연결이 끊어져요.`);
+  if(!ok) return;
+
+  const btn = document.getElementById('deleteSessionBtn');
+  btn.disabled = true; btn.textContent = '삭제 중...';
+
+  withTimeout(
+    db.collection('sessions').doc(editingSessionId).delete(),
+    12000, 'session-delete'
+  ).then(()=>{
+    showToast('회차가 삭제되었어요');
+    document.getElementById('sessionEditPanel').style.display = 'none';
+    editingSessionId = null;
+    loadSessionsForAdmin();
+  }).catch(err=>{
+    console.error(err);
+    showToast('삭제에 실패했어요: ' + (err.message || err));
+  }).finally(()=>{
+    btn.disabled = false; btn.textContent = '삭제';
+  });
+});
 
 /* ---- 질문 목록 ---- */
 function loadQuestionsForAdmin(){
@@ -1013,8 +1148,34 @@ function renderQuestionsFiltered(){
       <span class="who">${escapeHtml(q.childName)}</span>
       <span class="badge">${q.method==='voice' ? '🎙️ 음성' : '✍️ 글'}</span>
       <div class="txt">${escapeHtml(q.text)}</div>
+      <div style="text-align:right;margin-top:8px;">
+        <button class="btn-sm" data-qid="${q.id}" style="border-color:var(--coral);color:var(--coral-dark);">삭제</button>
+      </div>
     </div>
   `).join('') || '<div class="empty-state">아직 질문이 없어요.</div>';
+
+  list.querySelectorAll('button[data-qid]').forEach(btn=>{
+    btn.addEventListener('click', ()=>deleteQuestion(btn.dataset.qid, btn));
+  });
+}
+
+function deleteQuestion(questionId, btn){
+  const ok = window.confirm('이 질문을 삭제할까요? 되돌릴 수 없어요.');
+  if(!ok) return;
+
+  btn.disabled = true; btn.textContent = '삭제 중...';
+  withTimeout(
+    db.collection('questions').doc(questionId).delete(),
+    12000, 'question-delete'
+  ).then(()=>{
+    showToast('질문이 삭제되었어요');
+    window.__allQuestions = (window.__allQuestions || []).filter(q=>q.id !== questionId);
+    renderQuestionsFiltered();
+  }).catch(err=>{
+    console.error(err);
+    showToast('삭제에 실패했어요: ' + (err.message || err));
+    btn.disabled = false; btn.textContent = '삭제';
+  });
 }
 
 /* ---- 통계 ---- */
