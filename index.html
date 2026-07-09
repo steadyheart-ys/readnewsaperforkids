@@ -252,7 +252,7 @@
       </div>
     </div>
 
-    <div class="card" id="formCard" style="display:none;">
+    <div class="card" id="formCard">
       <div class="field">
         <label>내 이름</label>
         <input type="text" id="childName" placeholder="이름을 입력해주세요 (예: 하은)">
@@ -373,7 +373,6 @@
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 
 <script>
@@ -381,19 +380,17 @@
    🔧 설정: 새 Firebase 프로젝트 정보로 아래 값을 채워주세요
    Firebase 콘솔 > 프로젝트 설정 > 일반 > 내 앱(웹) 에서 확인 가능
    ========================================================= */
-
 const firebaseConfig = {
-    apiKey: "AIzaSyBAKEFcVqctSYa7cxlmqXG2h3Gh2Xo_HIA",
-    authDomain: "read-newspaper-kids.firebaseapp.com",
-    projectId: "read-newspaper-kids",
-    storageBucket: "read-newspaper-kids.firebasestorage.app",
-    messagingSenderId: "328478617229",
-    appId: "1:328478617229:web:5f717c29637693b7697cc4"
-  };
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
 
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
-const storage = firebase.storage();
 const auth = firebase.auth();
 
 /* ---------------------------------------------------------
@@ -471,13 +468,11 @@ function loadLatestSessionForKids(){
   ).then(snap=>{
     if(snap.empty){
       currentSession = null;
-      document.getElementById('formCard').style.display = 'none';
       return;
     }
     const doc = snap.docs[0];
     currentSession = { id: doc.id, ...doc.data() };
     renderArticleForKids();
-    document.getElementById('formCard').style.display = 'block';
     watchLeafCount(currentSession.id);
   }).catch(err=>{
     console.error(err);
@@ -863,19 +858,21 @@ function createSession(){
   };
 
   if(file){
+    // Storage 없이 Firestore에 직접 저장하기 위해, 최대한 작게 압축한 base64로 변환
     withTimeout(
-      compressImage(file, 1000, 0.75).then(blob=>{
-        const ref = storage.ref().child('sessions/' + Date.now() + '_' + file.name);
-        return ref.put(blob).then(()=>ref.getDownloadURL());
-      }),
-      15000, 'image-upload'
-    ).then(url=>finishCreate(url)).catch(err=>{
-      console.error(err);
-      if(String(err.message).startsWith('timeout')){
-        showToast('이미지 업로드가 너무 오래 걸려요. Storage 설정을 확인해주세요');
-      } else {
-        showToast('이미지 업로드에 실패했어요');
+      compressImageToBase64(file, 500, 0.55),
+      15000, 'image-compress'
+    ).then(dataUrl=>{
+      // Firestore 문서 1개는 1MB 제한이라, 여유 있게 700KB 아래로만 허용
+      if(dataUrl.length > 700000){
+        showToast('이미지 용량이 너무 커요. 더 작은 사진으로 다시 시도해주세요');
+        resetBtn();
+        return;
       }
+      finishCreate(dataUrl);
+    }).catch(err=>{
+      console.error(err);
+      showToast('이미지 처리에 실패했어요');
       resetBtn();
     });
   } else {
@@ -883,8 +880,8 @@ function createSession(){
   }
 }
 
-// 간단한 이미지 압축 (캔버스 리사이즈)
-function compressImage(file, maxWidth, quality){
+// 이미지를 리사이즈 + 압축한 뒤 base64(dataURL) 문자열로 반환
+function compressImageToBase64(file, maxWidth, quality){
   return new Promise((resolve, reject)=>{
     const reader = new FileReader();
     reader.onload = (e)=>{
@@ -896,7 +893,7 @@ function compressImage(file, maxWidth, quality){
         canvas.height = img.height * scale;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(blob=>resolve(blob), 'image/jpeg', quality);
+        resolve(canvas.toDataURL('image/jpeg', quality));
       };
       img.onerror = reject;
       img.src = e.target.result;
